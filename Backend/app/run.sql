@@ -1,8 +1,0 @@
-CREATE DATABASE livenote;
-
-USE livenote;
-
-CREATE TABLE page (
-    id INT PRIMARY KEY AUTO_INCREMENT,
-    text LONGTEXT
-);

@@ -1,56 +1,87 @@
-import { useState, useEffect, useCallback } from "react";
-import { saveMessage, getMessage } from "../services/messageService";
+import { useEffect, useRef, useState } from "react";
+
+const ROOM_ID = "global-room";
 
 export function Common() {
   const [text, setText] = useState("");
-
-  // CTRL + S → POST
-  const handleSave = useCallback(async () => {
-    try {
-      const res = await saveMessage(text);
-      console.log("POST /save called ✅", res.data);
-    } catch (error) {
-      console.error("POST failed ❌", error);
-    }
-  }, [text]);
-
-  // CTRL + Q → GET
-  const handleGet = useCallback(async () => {
-    try {
-      const res = await getMessage();
-      console.log("GET /get called ✅", res.data);
-      setText(res.data.text); // update textarea
-    } catch (error) {
-      console.error("GET failed ❌", error);
-    }
-  }, []);
+  const wsRef = useRef(null);
+  const pcRef = useRef(null);
+  const channelRef = useRef(null);
+  const isCaller = useRef(false);
 
   useEffect(() => {
-    const handleKeyDown = (e) => {
-      // CTRL + S
-      if (e.ctrlKey && e.key.toLowerCase() === "s") {
-        e.preventDefault();
-        handleSave();
-      }
+    const ws = new WebSocket(`ws://localhost:8080/ws/${ROOM_ID}`);
+    wsRef.current = ws;
 
-      // CTRL + Q
-      if (e.ctrlKey && e.key.toLowerCase() === "q") {
-        e.preventDefault();
-        handleGet();
+    const pc = new RTCPeerConnection({
+      iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+    });
+    pcRef.current = pc;
+
+    pc.ondatachannel = (e) => {
+      channelRef.current = e.channel;
+      e.channel.onmessage = (ev) => setText(ev.data);
+    };
+
+    pc.onicecandidate = (e) => {
+      if (e.candidate) {
+        ws.send(JSON.stringify({ type: "ice", candidate: e.candidate }));
       }
     };
 
-    window.addEventListener("keydown", handleKeyDown);
+    ws.onmessage = async (event) => {
+      const msg = JSON.parse(event.data);
+
+      if (msg.type === "offer") {
+        await pc.setRemoteDescription(msg.offer);
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        ws.send(JSON.stringify({ type: "answer", answer }));
+      }
+
+      if (msg.type === "answer") {
+        await pc.setRemoteDescription(msg.answer);
+      }
+
+      if (msg.type === "ice") {
+        await pc.addIceCandidate(msg.candidate);
+      }
+    };
+
+    ws.onopen = () => {
+      if (!isCaller.current) {
+        isCaller.current = true;
+
+        const channel = pc.createDataChannel("notes");
+        channelRef.current = channel;
+        channel.onmessage = (e) => setText(e.data);
+
+        pc.createOffer().then(async (offer) => {
+          await pc.setLocalDescription(offer);
+          ws.send(JSON.stringify({ type: "offer", offer }));
+        });
+      }
+    };
 
     return () => {
-      window.removeEventListener("keydown", handleKeyDown);
+      ws.close();
+      pc.close();
     };
-  }, [handleSave, handleGet]);
+  }, []);
+
+  const onChange = (e) => {
+    const value = e.target.value;
+    setText(value);
+
+    if (channelRef.current?.readyState === "open") {
+      channelRef.current.send(value);
+    }
+  };
 
   return (
     <textarea
       value={text}
-      onChange={(e) => setText(e.target.value)}
+      onChange={onChange}
       placeholder="Type things to be shared"
       style={{
         width: "100%",
